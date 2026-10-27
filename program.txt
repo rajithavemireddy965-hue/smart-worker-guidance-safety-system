@@ -1,0 +1,558 @@
+#include <Wire.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <math.h>
+
+// ===================================================
+// WIFI SETTINGS
+// ===================================================
+
+const char* ssid = "Rajitha";
+const char* password = "reddy@22";
+
+
+// ===================================================
+// TELEGRAM SETTINGS
+// ===================================================
+
+String botToken = "8972331578:AAFSBPogAw6O4UIG3EvFNW6WtWoboTrsLBc";
+String chatID = "7697139137";
+
+WiFiClientSecure client;
+
+
+// ===================================================
+// PIN DEFINITIONS
+// ===================================================
+
+#define GREEN_LED 19
+#define RED_LED   23
+#define BUZZER    18
+#define BUTTON    4
+
+#define MPU9250_ADDR 0x68
+
+
+// ===================================================
+// EMG SETTINGS
+// ===================================================
+
+int emgValue = 0;
+
+// Current code uses Serial Monitor simulation.
+// Later you can replace this with actual EMG analog reading.
+const int EMG_THRESHOLD = 2500;
+
+
+// ===================================================
+// FALL DETECTION SETTINGS
+// ===================================================
+
+const float LOW_ACCEL_THRESHOLD = 0.5;
+const float IMPACT_THRESHOLD = 1.8;
+const float ORIENTATION_THRESHOLD = 0.6;
+
+const unsigned long IMPACT_TIME_WINDOW = 1500;
+
+
+// ===================================================
+// FALL VARIABLES
+// ===================================================
+
+bool possibleFall = false;
+unsigned long lowAccelTime = 0;
+
+bool fallAlertLatched = false;
+
+
+// ===================================================
+// ALERT FLAGS
+// Prevent repeated Telegram messages
+// ===================================================
+
+bool fallTelegramSent = false;
+bool emgTelegramSent = false;
+bool buttonTelegramSent = false;
+
+
+// ===================================================
+// INITIAL ORIENTATION
+// ===================================================
+
+float normalAx = 0;
+float normalAy = 0;
+float normalAz = 0;
+
+
+// ===================================================
+// BUTTON
+// ===================================================
+
+bool lastButtonState = HIGH;
+
+
+// ===================================================
+// READ MPU9250
+// ===================================================
+
+void readMPU(float &ax, float &ay, float &az) {
+
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+
+  Wire.requestFrom(MPU9250_ADDR, 6, true);
+
+  if (Wire.available() >= 6) {
+
+    int16_t AccX = Wire.read() << 8 | Wire.read();
+    int16_t AccY = Wire.read() << 8 | Wire.read();
+    int16_t AccZ = Wire.read() << 8 | Wire.read();
+
+    ax = AccX / 16384.0;
+    ay = AccY / 16384.0;
+    az = AccZ / 16384.0;
+  }
+}
+
+
+// ===================================================
+// CONNECT WIFI
+// ===================================================
+
+void connectWiFi() {
+
+  Serial.println("Connecting to Wi-Fi...");
+
+  WiFi.begin(ssid, password);
+
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED && attempts < 30) {
+
+    delay(500);
+    Serial.print(".");
+
+    attempts++;
+  }
+
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+
+    Serial.println("Wi-Fi Connected Successfully!");
+
+    Serial.print("ESP32 IP Address: ");
+    Serial.println(WiFi.localIP());
+
+  } else {
+
+    Serial.println("Wi-Fi Connection Failed!");
+  }
+}
+
+
+// ===================================================
+// SEND TELEGRAM MESSAGE
+// ===================================================
+
+void sendTelegramMessage(String message) {
+
+  if (WiFi.status() != WL_CONNECTED) {
+
+    Serial.println("Telegram not sent - Wi-Fi disconnected!");
+    return;
+  }
+
+  HTTPClient http;
+
+  // Replace spaces with %20 for simple URL encoding
+  message.replace(" ", "%20");
+
+  String url =
+    "https://api.telegram.org/bot" +
+    botToken +
+    "/sendMessage?chat_id=" +
+    chatID +
+    "&text=" +
+    message;
+
+  Serial.println("Sending Telegram Alert...");
+
+  http.begin(client, url);
+
+  int httpResponseCode = http.GET();
+
+  Serial.print("Telegram Response Code: ");
+  Serial.println(httpResponseCode);
+
+  if (httpResponseCode == 200) {
+
+    Serial.println("Telegram Alert Sent Successfully!");
+
+  } else {
+
+    Serial.println("Telegram Alert Failed!");
+    Serial.println(http.getString());
+  }
+
+  http.end();
+}
+
+
+// ===================================================
+// SETUP
+// ===================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  // LEDs and buzzer
+
+  pinMode(GREEN_LED, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BUZZER, OUTPUT);
+
+  // Push button
+
+  pinMode(BUTTON, INPUT_PULLUP);
+
+
+  // Initial outputs
+
+  digitalWrite(GREEN_LED, LOW);
+  digitalWrite(RED_LED, LOW);
+  digitalWrite(BUZZER, LOW);
+
+
+  // I2C
+
+  Wire.begin(21, 22);
+
+
+  Serial.println();
+  Serial.println("=================================");
+  Serial.println("SMART WORKER SAFETY SYSTEM");
+  Serial.println("=================================");
+
+
+  // Wake MPU9250
+
+  Wire.beginTransmission(MPU9250_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+
+  byte error = Wire.endTransmission();
+
+
+  if (error == 0) {
+
+    Serial.println("MPU9250 Connected Successfully!");
+
+  } else {
+
+    Serial.println("MPU9250 Connection Failed!");
+  }
+
+
+  // Record initial orientation
+
+  delay(1000);
+
+  readMPU(normalAx, normalAy, normalAz);
+
+  Serial.println("Normal Orientation Recorded!");
+
+
+  // HTTPS configuration
+
+  client.setInsecure();
+
+
+  // Wi-Fi
+
+  connectWiFi();
+
+
+  Serial.println("SYSTEM READY");
+}
+
+
+// ===================================================
+// LOOP
+// ===================================================
+
+void loop() {
+
+
+  // ================================================
+  // EMG SIMULATION FROM SERIAL MONITOR
+  // ================================================
+
+  if (Serial.available() > 0) {
+
+    int inputValue = Serial.parseInt();
+
+    if (inputValue >= 0) {
+
+      emgValue = inputValue;
+
+      Serial.print("Simulated EMG Value: ");
+      Serial.println(emgValue);
+    }
+
+    while (Serial.available() > 0) {
+      Serial.read();
+    }
+  }
+
+
+  // ================================================
+  // READ MPU9250
+  // ================================================
+
+  float ax = 0;
+  float ay = 0;
+  float az = 0;
+
+  readMPU(ax, ay, az);
+
+
+  // ================================================
+  // TOTAL ACCELERATION
+  // ================================================
+
+  float totalAccel = sqrt(
+    ax * ax +
+    ay * ay +
+    az * az
+  );
+
+
+  // ================================================
+  // ORIENTATION CHANGE
+  // ================================================
+
+  float orientationChange = sqrt(
+
+    (ax - normalAx) * (ax - normalAx) +
+
+    (ay - normalAy) * (ay - normalAy) +
+
+    (az - normalAz) * (az - normalAz)
+
+  );
+
+
+  // ================================================
+  // BUTTON DETECTION
+  // ================================================
+
+  bool currentButtonState = digitalRead(BUTTON);
+
+  bool buttonPressed =
+    (lastButtonState == HIGH &&
+     currentButtonState == LOW);
+
+  lastButtonState = currentButtonState;
+
+
+  // ================================================
+  // FALL ALERT LATCH
+  // ================================================
+
+  if (fallAlertLatched) {
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(BUZZER, HIGH);
+
+    Serial.println("STATUS: FALL ALERT ACTIVE!");
+
+
+    // Send Telegram only once
+
+    if (!fallTelegramSent) {
+
+      sendTelegramMessage(
+        "EMERGENCY: Worker Fall Detected!"
+      );
+
+      fallTelegramSent = true;
+    }
+
+
+    // Button resets fall alert
+
+    if (buttonPressed) {
+
+      fallAlertLatched = false;
+      possibleFall = false;
+
+      fallTelegramSent = false;
+
+      Serial.println("FALL ALERT RESET!");
+    }
+
+    delay(300);
+
+    return;
+  }
+
+
+  // ================================================
+  // FALL DETECTION - STAGE 1
+  // ================================================
+
+  if (totalAccel < LOW_ACCEL_THRESHOLD &&
+      !possibleFall) {
+
+    possibleFall = true;
+
+    lowAccelTime = millis();
+
+    Serial.println(
+      "POSSIBLE FALL: LOW ACCELERATION DETECTED"
+    );
+  }
+
+
+  // ================================================
+  // FALL DETECTION - STAGE 2
+  // ================================================
+
+  if (possibleFall &&
+      totalAccel > IMPACT_THRESHOLD &&
+      (millis() - lowAccelTime < IMPACT_TIME_WINDOW)) {
+
+    if (orientationChange > ORIENTATION_THRESHOLD) {
+
+      fallAlertLatched = true;
+
+      possibleFall = false;
+
+      Serial.println("FALL PATTERN CONFIRMED!");
+      Serial.println("STATUS: FALL DETECTED!");
+    }
+  }
+
+
+  // ================================================
+  // CANCEL FALSE FALL
+  // ================================================
+
+  if (possibleFall &&
+      millis() - lowAccelTime > IMPACT_TIME_WINDOW) {
+
+    possibleFall = false;
+
+    Serial.println("Possible fall cancelled");
+  }
+
+
+  // ================================================
+  // SERIAL MONITOR OUTPUT
+  // ================================================
+
+  Serial.println();
+  Serial.println("-----------------------------");
+
+  Serial.print("EMG Value: ");
+  Serial.println(emgValue);
+
+  Serial.print("Accel X: ");
+  Serial.print(ax);
+
+  Serial.print(" | Y: ");
+  Serial.print(ay);
+
+  Serial.print(" | Z: ");
+  Serial.println(az);
+
+  Serial.print("Total Acceleration: ");
+  Serial.print(totalAccel);
+  Serial.println(" g");
+
+  Serial.print("Orientation Change: ");
+  Serial.println(orientationChange);
+
+
+  // ================================================
+  // EMERGENCY BUTTON
+  // ================================================
+
+  if (buttonPressed) {
+
+    Serial.println("STATUS: EMERGENCY BUTTON PRESSED!");
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(BUZZER, HIGH);
+
+
+    // Send Telegram only once
+
+    if (!buttonTelegramSent) {
+
+      sendTelegramMessage(
+        "EMERGENCY: Worker Pressed SOS Button!"
+      );
+
+      buttonTelegramSent = true;
+    }
+  }
+
+
+  // ================================================
+  // MUSCLE STRAIN
+  // ================================================
+
+  else if (emgValue >= EMG_THRESHOLD) {
+
+    Serial.println("STATUS: MUSCLE STRAIN DETECTED!");
+
+    digitalWrite(GREEN_LED, LOW);
+    digitalWrite(RED_LED, HIGH);
+    digitalWrite(BUZZER, HIGH);
+
+
+    // Send Telegram only once
+
+    if (!emgTelegramSent) {
+
+      sendTelegramMessage(
+        "WARNING: Abnormal Muscle Strain Detected!"
+      );
+
+      emgTelegramSent = true;
+    }
+  }
+
+
+  // ================================================
+  // SAFE CONDITION
+  // ================================================
+
+  else {
+
+    Serial.println("STATUS: WORKER SAFE");
+
+    digitalWrite(GREEN_LED, HIGH);
+    digitalWrite(RED_LED, LOW);
+    digitalWrite(BUZZER, LOW);
+
+
+    // Reset EMG alert flag when normal
+
+    emgTelegramSent = false;
+
+    // Reset button alert flag
+
+    buttonTelegramSent = false;
+  }
+
+
+  delay(200);
+}
