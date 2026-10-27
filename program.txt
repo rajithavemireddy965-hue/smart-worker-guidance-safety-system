@@ -8,16 +8,16 @@
 // WIFI SETTINGS
 // ===================================================
 
-const char* ssid = "Rajitha";
-const char* password = "reddy@22";
+const char* ssid = "your hotspot name";
+const char* password = "your hotspot password";
 
 
 // ===================================================
 // TELEGRAM SETTINGS
 // ===================================================
 
-String botToken = "8972331578:AAFSBPogAw6O4UIG3EvFNW6WtWoboTrsLBc";
-String chatID = "7697139137";
+String botToken = "token name";
+String chatID = "your id";
 
 WiFiClientSecure client;
 
