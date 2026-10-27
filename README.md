@@ -27,6 +27,7 @@ This project aims to improve worker safety in industrial and agricultural enviro
 ## Project Photos
 
 Project hardware and demonstration photos will be displayed here.
+![Smart Worker Guidance and Safety System - Engineering Day Expo](WhatsApp%20Image%202026-10-27%20at%2011.03.06%20PM.jpeg)
 
 ## Project Demonstration Video
 
